@@ -1,0 +1,31 @@
+---
+title: "Miscellaneous Tensorflow Operations"
+author: "Will Townes"
+date: "2/16/2018"
+output: html_document
+---
+
+```{r}
+library(tensorflow)
+```
+
+broadcasting- tensorflow equivalent of R's vector recycling
+
+```{r}
+#z32<-tf$constant(matrix(0,nrow=3,ncol=2),dtype="float32")
+z<-tf$constant(diag(3),dtype="float32")
+a<-tf$constant(c(1,-2,3))
+a2<-tf$constant(matrix(c(1,-2,3)),dtype="float32")
+sess<-tf$Session()
+sess$run(z+a)
+sess$run(a+z)
+sess$run(tf$transpose(a)+z)
+sess$run(tf$transpose(tf$transpose(z)+a))
+sess$run(z+a2)
+sess$close()
+```
+
+conclusion about broadcasting:
+
+* tensorflow supports recycling but the default mode is to recycle across the last dimension first, which is the opposite of R which recycles across the first dimension.
+* there are two ways to force recycling across rows instead. The first is to change the representation of the vector into a 3x1 matrix instead of a 3-vector. The matrix representation then aligns along the rows of the z. Alternatively, one can transpose the larger array and then transpose again after the recycling operation

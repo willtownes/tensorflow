@@ -95,7 +95,7 @@ tf_pca<-function(Y,L=2,alpha=1e-4,ortho=TRUE,verbose=TRUE){
     res<-ortho(U,V)
     res$obj_trace<-obj_trace
   } else {
-    res<-mget(c("U","V","obj_trace"))
+    res<-list(factors=t(U),loadings=V,obj_trace=obj_trace)
   }
   res
 }
