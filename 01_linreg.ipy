@@ -11,6 +11,8 @@ import numpy as np
 import sklearn as skl
 import statsmodels as sm
 from matplotlib import pyplot as plt
+import tensorflow as tf
+from tensorflow.keras import layers
 
 #%%
 rng = np.random.default_rng()
@@ -38,3 +40,19 @@ fit2 = sm.regression.linear_model.OLS(y,X1).fit()
 plt.scatter(b,fit2.params[1:])
 
 #%%
+tf_model = tf.keras.Sequential([layers.Dense(units=1)])
+initial_fit = tf_model.predict(X)
+initial_fit.shape
+plt.scatter(b,tf_model.layers[0].kernel) #bad fit, random init
+tf_model.compile(optimizer=tf.optimizers.Adam(learning_rate=0.1), loss='mean_squared_error')
+
+#%%
+%%time
+history = tf_model.fit(
+    X, y, 
+    epochs=100,
+    # suppress logging
+    verbose=0)
+plt.plot(history.history['loss'])
+plt.scatter(b,tf_model.layers[0].kernel) #bad fit, random init
+
