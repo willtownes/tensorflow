@@ -8,8 +8,8 @@ Created on Thu Dec 31 17:26:15 2020
 
 #%%
 import numpy as np
-import sklearn as skl
-import statsmodels as sm
+from sklearn import linear_model
+import statsmodels.api as sm
 from matplotlib import pyplot as plt
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -30,29 +30,89 @@ b = np.array((-3,-1.5,-.5,-.25,-0.01,0.01,.5,1,1.5))
 #strong positive: 8,9
 sigma2 = 4 #fairly high level of noise
 y = rng.normal(mu+X@b, np.sqrt(sigma2), size=50)
+def mse(y,yhat):
+    return ((y-yhat)**2).mean()
 
-#%% 
-fit1 = skl.linear_model.LinearRegression().fit(X,y) #sklearn
+#%% Scikit-learn 
+fit1 = linear_model.LinearRegression().fit(X,y) #sklearn
+mse1 = mse(y,fit1.predict(X))
 plt.scatter(b,fit1.coef_)
 plt.axline((0,0),slope=1,color='r')
+
+#%% Statsmodels
 X1 = sm.tools.tools.add_constant(X)
 fit2 = sm.regression.linear_model.OLS(y,X1).fit()
+mse2 = mse(y,fit2.predict(X1))
 plt.scatter(b,fit2.params[1:])
+plt.axline((0,0),slope=1,color='r')
 
-#%%
+#%% Tensorflow-Keras
 tf_model = tf.keras.Sequential([layers.Dense(units=1)])
 initial_fit = tf_model.predict(X)
 initial_fit.shape
-plt.scatter(b,tf_model.layers[0].kernel) #bad fit, random init
+plt.scatter(b,tf_model.layers[0].kernel.numpy().squeeze()) #bad fit, random init
 tf_model.compile(optimizer=tf.optimizers.Adam(learning_rate=0.1), loss='mean_squared_error')
 
-#%%
+#%% Tensorflow-Keras
 %%time
-history = tf_model.fit(
+history1 = tf_model.fit(
     X, y, 
-    epochs=100,
+    epochs=1000,
     # suppress logging
     verbose=0)
-plt.plot(history.history['loss'])
-plt.scatter(b,tf_model.layers[0].kernel) #bad fit, random init
+plt.plot()
+fig, ax = plt.subplots()
+ax.set_yscale('log')
+ax.plot(history1.history['loss'])
+ax.axhline(mse1,c='green')
+ax.axhline(mse2,c='red',dashes=[5])
+plt.show()
+
+#%%
+b_keras = tf_model.layers[0].kernel.numpy().squeeze()
+plt.scatter(b,b_keras)
+plt.axline((0,0),slope=1,color='r')
+
+#%% Tensorflow-Manual
+y_tf = tf.constant(y)
+X_tf = tf.constant(X)
+b_tf = tf.Variable(rng.normal(size=b.shape))
+b0_tf = tf.Variable(y.mean())
+# optimization setup
+optimizer = tf.optimizers.Adam(0.1)
+loss_history = []
+obj_history = []
+
+def train_step(b0,b):
+    with tf.GradientTape() as tape:
+        y_est = b0 + tf.linalg.matvec(X_tf,b)
+        loss = tf.reduce_mean((y_tf-y_est)**2)
+    # Add asserts to check the shape of the output.
+    tf.debugging.assert_equal(y_est.shape, y.shape)
+    loss_history.append(loss.numpy())
+    # compute gradients
+    grads = tape.gradient(loss, [b0,b])
+    optimizer.apply_gradients(zip(grads, [b0,b]))
+    
+def train(iters):
+    for i in range(iters):
+        train_step(b0_tf,b_tf)
+        msg = 'Iteration: {}, loss: {:.3E}'
+        if i%100==0:
+            print(msg.format(i,loss_history[i]))
+            
+train(1000)
+
+#%%
+plt.plot()
+fig, ax = plt.subplots()
+ax.set_yscale('log')
+ax.plot(history1.history['loss'],c='green',dashes=[5])
+ax.axhline(mse1,c='red')
+ax.plot(loss_history)
+plt.show()
+
+#%%
+plt.scatter(b,b_tf.numpy())
+plt.axline((0,0),slope=1,color='r')
 
