@@ -74,34 +74,39 @@ plt.scatter(b,b_keras)
 plt.axline((0,0),slope=1,color='r')
 
 #%% Tensorflow-Manual
-y_tf = tf.constant(y)
-X_tf = tf.constant(X)
-b_tf = tf.Variable(rng.normal(size=b.shape))
-b0_tf = tf.Variable(y.mean())
-# optimization setup
-optimizer = tf.optimizers.Adam(0.1)
-loss_history = []
-obj_history = []
+class MyModel(tf.Module):
+  def __init__(self,intercept_init, slopes_len, **kwargs):
+    super().__init__(**kwargs)
+    self.slopes = tf.Variable(rng.normal(size=slopes_len))
+    self.intercept = tf.Variable(intercept_init)
 
-def train_step(b0,b):
-    with tf.GradientTape() as tape:
-        y_est = b0 + tf.linalg.matvec(X_tf,b)
-        loss = tf.reduce_mean((y_tf-y_est)**2)
-    # Add asserts to check the shape of the output.
-    tf.debugging.assert_equal(y_est.shape, y.shape)
-    loss_history.append(loss.numpy())
-    # compute gradients
-    grads = tape.gradient(loss, [b0,b])
-    optimizer.apply_gradients(zip(grads, [b0,b]))
-    
-def train(iters):
-    for i in range(iters):
-        train_step(b0_tf,b_tf)
-        msg = 'Iteration: {}, loss: {:.3E}'
-        if i%100==0:
-            print(msg.format(i,loss_history[i]))
-            
-train(1000)
+  def __call__(self, x):
+    return self.intercept+tf.linalg.matvec(x,self.slopes)
+
+def loss(target_y, predicted_y):
+  return tf.reduce_mean(tf.square(target_y - predicted_y))
+           
+SHUFFLE_BUFFER_SIZE = X.shape[0]
+BATCH_SIZE = 29
+ADAM_LEARN_RATE = 0.1
+NUM_EPOCHS = 1000
+model = MyModel(y.mean(),X.shape[1])
+D = tf.data.Dataset.from_tensor_slices((X, y))
+D = D.shuffle(SHUFFLE_BUFFER_SIZE).batch(BATCH_SIZE)
+optimizer = tf.optimizers.Adam(ADAM_LEARN_RATE)            
+msg = 'Epoch: {:03d}, loss: {:.3E}'
+loss_history = []
+for epoch in range(NUM_EPOCHS):
+    epoch_loss_avg = tf.keras.metrics.Mean()
+    for Xb, yb in D: #iterate through each of the batches
+        with tf.GradientTape() as tape:
+            current_loss = loss(yb, model(Xb))
+        grads = tape.gradient(current_loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        epoch_loss_avg.update_state(current_loss)
+    loss_history.append(epoch_loss_avg.result())
+    if epoch%100==0:
+        print(msg.format(epoch,loss_history[epoch]))
 
 #%%
 plt.plot()
@@ -113,6 +118,6 @@ ax.plot(loss_history)
 plt.show()
 
 #%%
-plt.scatter(b,b_tf.numpy())
+plt.scatter(b,model.slopes.numpy())
 plt.axline((0,0),slope=1,color='r')
 
