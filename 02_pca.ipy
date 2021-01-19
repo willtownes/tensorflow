@@ -24,7 +24,10 @@
 import numpy as np
 import tensorflow as tf
 from matplotlib import pyplot as plt
+from tensorflow.keras import layers
 rng = np.random.default_rng()
+def mse(Y,U,V):
+    return np.mean((Y-U@V.T)**2)
 
 # %% Generate data
 N = 100 #number of observations
@@ -38,9 +41,24 @@ Y = U @ V.T + rng.normal(scale=.1,size=(N,J))
 svd_Y = np.linalg.svd(Y,full_matrices=False)
 U_svd = svd_Y[0][:,:L]*svd_Y[1][:L]
 V_svd = svd_Y[2][:L,:].T
-mse_svd = np.mean((Y-U_svd@V_svd.T)**2)
+mse_svd = mse(Y,U_svd,V_svd)
+
+# %% Global variables and convenience functions
+BATCH_SIZE = 19
+ADAM_LEARN_RATE = 0.01
+NUM_EPOCHS = 500
+D = tf.data.Dataset.from_tensor_slices((np.array(range(N)),Y)).batch(BATCH_SIZE)
+optimizer = tf.optimizers.Adam(ADAM_LEARN_RATE)
+
+def postprocess(U,V):
+    svd_V = np.linalg.svd(V,full_matrices=False)
+    V = svd_V[0]
+    U = U @ svd_V[2].T * svd_V[1]
+    return U,V
+
 
 # %% Tensorflow manual
+%%time
 class MyPCA(tf.Module):
   def __init__(self, data_dim, features_dim, latent_dim, **kwargs):
     super().__init__(**kwargs)
@@ -54,13 +72,8 @@ class MyPCA(tf.Module):
 def loss(target_y, predicted_y):
   return tf.reduce_mean(tf.square(target_y - predicted_y))
 
-BATCH_SIZE = 2
-ADAM_LEARN_RATE = 0.01
-NUM_EPOCHS = 500
 #idx_list = np.array_split(range(N), np.ceil(N/BATCH_SIZE))
 model = MyPCA(N,J,L)
-D = tf.data.Dataset.from_tensor_slices((np.array(range(N)),Y)).batch(BATCH_SIZE)
-optimizer = tf.optimizers.Adam(ADAM_LEARN_RATE)            
 msg = 'Epoch: {:03d}, loss: {:.3E}'
 loss_history = []
 for epoch in range(NUM_EPOCHS):
@@ -76,16 +89,13 @@ for epoch in range(NUM_EPOCHS):
     if epoch%100==0:
         print(msg.format(epoch,loss_history[epoch]))
 # postprocessing        
-U_tf = model.U.numpy()
-V_tf = model.V.numpy()
-svd_tf = np.linalg.svd(V_tf,full_matrices=False)
-V_tf = svd_tf[0]
-U_tf = U_tf @ svd_tf[2].T * svd_tf[1]
+U_tf,V_tf = postprocess(model.U.numpy(), model.V.numpy())
+
 # for l in range(L): #fix the sign flips
 #     if np.sign(U_svd[0,l]) != np.sign(U_tf[0,l]):
 #         U_svd[:,l]*= -1
 #         V_svd[:,l]*= -1
-mse_tf = np.mean((Y-U_tf@V_tf.T)**2)
+mse_tf = mse(Y,U_tf,V_tf)
 print("MSE for SVD: {:.3E}, MSE for TF: {:.3E}".format(mse_svd,mse_tf))
 
 # %% Tensorflow manual: loss trace plot
@@ -106,4 +116,47 @@ plt.axline((0,0),slope=1,c='red')
 
 # %% Tensorflow manual: compare to SVD
 plt.scatter(txflat(U_svd),txflat(U_tf))
+plt.axline((0,0),slope=1,c='red')
+
+# %% Tensorflow linear autoencoder
+%%time
+class LinearAutoencoder(tf.keras.Model):
+  def __init__(self, features_dim, latent_dim):
+    super(LinearAutoencoder, self).__init__()
+    self.latent_dim = latent_dim 
+    self.encoder = tf.keras.Sequential([
+        layers.Dense(latent_dim,use_bias=True)
+    ])
+    self.decoder = tf.keras.Sequential([
+      layers.Dense(features_dim,use_bias=False)
+    ])
+  def call(self,x):
+    encoded = self.encoder(x)
+    decoded = self.decoder(encoded)
+    return decoded
+
+model = LinearAutoencoder(J,L)
+model.compile(optimizer=optimizer, loss='mean_squared_error')
+history1 = model.fit(Y, Y, epochs=NUM_EPOCHS, verbose=0, batch_size=BATCH_SIZE)
+U_ae,V_ae = postprocess(model.encoder(Y).numpy(), model.decoder.layers[0].kernel.numpy().T)
+mse_ae = mse(Y,U_ae,V_ae)
+print("MSE for SVD: {:.3E}, MSE for TF: {:.3E}, MSE for AE: {:.3E}".format(mse_svd,mse_tf,mse_ae))
+
+# %% Linear Autoencoder vs TF PCA
+plt.plot()
+fig, ax = plt.subplots()
+ax.set_yscale('log')
+ax.axhline(mse_svd,c='red')
+ax.plot(loss_history)
+ax.plot(history1.history['loss'],c='green')
+plt.xlabel('iteration')
+plt.ylabel('loss (MSE)');
+plt.show()
+
+# %% Tensorflow manual: compare to SVD
+plt.scatter(txflat(V_svd), txflat(V_ae))
+plt.axline((0,0),slope=1,c='red')
+
+# %% Tensorflow manual: compare to SVD
+plt.scatter(txflat(U_svd),txflat(U_ae))
 plt.axline((0,0),slope=1,c='red')
