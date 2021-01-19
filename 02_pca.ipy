@@ -17,72 +17,93 @@
 # ## Will Townes
 #
 # This code was originally based on https://gist.github.com/ahwillia/4c10830640d325e0cab978bc18c6263a 
+# 
+# See also https://www.nxn.se/valent/2017/6/19/approximate-pca-by-mini-batch-sgd-using-tensorflow
 
 # %%
 import numpy as np
 import tensorflow as tf
 from matplotlib import pyplot as plt
+rng = np.random.default_rng()
 
-# %%
+# %% Generate data
 N = 100 #number of observations
 J = 200 #number of features
 L = 5 #number of latent dimensions
-df = (N+J)*L
+U = rng.normal(size=(N,L))
+V = rng.normal(size=(J,L))
+Y = U @ V.T + rng.normal(scale=.1,size=(N,J))
 
-# generate data
-U_true = np.random.randn(N,L)
-V_true = np.random.randn(J,L)
-Y_true = U_true @ V_true.T
-Y_tf = tf.constant(Y_true.astype(np.float32))
-denom = tf.constant(float(N*J-df))
+# %% SVD
+svd_Y = np.linalg.svd(Y,full_matrices=False)
+U_svd = svd_Y[0][:,:L]*svd_Y[1][:L]
+V_svd = svd_Y[2][:L,:].T
+mse_svd = np.mean((Y-U_svd@V_svd.T)**2)
 
-U_tf = tf.Variable(np.random.randn(N,L).astype(np.float32))
-V_tf = tf.Variable(np.random.randn(J,L).astype(np.float32))
+# %% Tensorflow manual
+class MyPCA(tf.Module):
+  def __init__(self, data_dim, features_dim, latent_dim, **kwargs):
+    super().__init__(**kwargs)
+    self.U = tf.Variable(rng.normal(size=(data_dim,latent_dim)), name="factors")
+    self.V = tf.Variable(rng.normal(size=(features_dim,latent_dim)), name="loadings")
 
-# regularization 
-alpha = 1e-4
-alphaU = tf.constant(float(alpha/(N*L)))
-alphaV = tf.constant(float(alpha/(J*L)))
+  def __call__(self,idx):
+    U_ss = tf.gather(self.U,idx)
+    return tf.linalg.matmul(U_ss,self.V,transpose_b=True)
 
-# optimization setup
-optimizer = tf.keras.optimizers.Adam(0.01)
+def loss(target_y, predicted_y):
+  return tf.reduce_mean(tf.square(target_y - predicted_y))
+
+BATCH_SIZE = 2
+ADAM_LEARN_RATE = 0.01
+NUM_EPOCHS = 500
+#idx_list = np.array_split(range(N), np.ceil(N/BATCH_SIZE))
+model = MyPCA(N,J,L)
+D = tf.data.Dataset.from_tensor_slices((np.array(range(N)),Y)).batch(BATCH_SIZE)
+optimizer = tf.optimizers.Adam(ADAM_LEARN_RATE)            
+msg = 'Epoch: {:03d}, loss: {:.3E}'
 loss_history = []
-obj_history = []
+for epoch in range(NUM_EPOCHS):
+    epoch_loss_avg = tf.keras.metrics.Mean()
+    for idx, Yss in D: #iterate through each of the batches
+        with tf.GradientTape() as tape:
+            current_loss = loss(Yss, model(idx))
+        #how to compute gradient for only the slice of U instead of all?
+        grads = tape.gradient(current_loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        epoch_loss_avg.update_state(current_loss)
+    loss_history.append(epoch_loss_avg.result())
+    if epoch%100==0:
+        print(msg.format(epoch,loss_history[epoch]))
+# postprocessing        
+U_tf = model.U.numpy()
+V_tf = model.V.numpy()
+svd_tf = np.linalg.svd(V_tf,full_matrices=False)
+V_tf = svd_tf[0]
+U_tf = U_tf @ svd_tf[2].T * svd_tf[1]
+# for l in range(L): #fix the sign flips
+#     if np.sign(U_svd[0,l]) != np.sign(U_tf[0,l]):
+#         U_svd[:,l]*= -1
+#         V_svd[:,l]*= -1
+mse_tf = np.mean((Y-U_tf@V_tf.T)**2)
+print("MSE for SVD: {:.3E}, MSE for TF: {:.3E}".format(mse_svd,mse_tf))
 
-def train_step(U,V):
-    with tf.GradientTape() as tape:
-        Y_est = tf.matmul(U,tf.transpose(V))
-        loss = tf.reduce_sum((Y_tf-Y_est)**2)/denom
-    # Add asserts to check the shape of the output.
-    tf.debugging.assert_equal(Y_est.shape, (N, J))
-    loss_history.append(loss.numpy())
-    # regularized loss
-    regU = alphaU*tf.reduce_sum(U**2)
-    regV = alphaV*tf.reduce_sum(V**2)
-    objective = loss + regU + regV
-    obj_history.append(objective.numpy())
-    # compute gradients
-    grads = tape.gradient(loss, [U,V])
-    optimizer.apply_gradients(zip(grads, [U,V]))
-
-#def train(epochs):
-#  for epoch in range(epochs):
-#    for (batch, (images, labels)) in enumerate(dataset):
-#      train_step(images, labels)
-#    print ('Epoch {} finished'.format(epoch))
-
-def train(iters):
-    for i in range(iters):
-        train_step(U_tf, V_tf)
-        msg = 'Iteration: {}, loss: {:.3E}, objective: {:.3E}'
-        if i%100==0:
-            print(msg.format(i,loss_history[i],obj_history[i]))
-            
-train(1000)
-
-# %%
-plt.plot(loss_history)
+# %% Tensorflow manual: loss trace plot
+plt.plot()
+fig, ax = plt.subplots()
+ax.set_yscale('log')
+ax.axhline(mse_svd,c='red')
+ax.plot(loss_history)
 plt.xlabel('iteration')
 plt.ylabel('loss (MSE)');
+plt.show()
 
-# %%
+# %% Tensorflow manual: compare to SVD
+def txflat(x):
+    return (x@x.T).flatten()
+plt.scatter(txflat(V_svd), txflat(V_tf))
+plt.axline((0,0),slope=1,c='red')
+
+# %% Tensorflow manual: compare to SVD
+plt.scatter(txflat(U_svd),txflat(U_tf))
+plt.axline((0,0),slope=1,c='red')
