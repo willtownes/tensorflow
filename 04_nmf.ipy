@@ -18,6 +18,124 @@
 
 # %%
 import numpy as np
+from sklearn.decomposition import NMF
 import tensorflow as tf
 from matplotlib import pyplot as plt
 rng = np.random.default_rng()
+
+# %% Convenience functions
+def poisson_loss(y,mu):
+    """
+    Equivalent to the Tensorflow Poisson loss
+    https://www.tensorflow.org/api_docs/python/tf/keras/losses/Poisson
+    It's the negative log-likelihood of Poisson without the log y! constant
+    """
+    with np.errstate(divide='ignore',invalid='ignore'):
+        res = mu-y*np.log(mu)
+    return np.mean(res[np.isfinite(res)])
+
+def poisson_deviance(y,mu):
+    """
+    Equivalent to "KL divergence" between y and mu:
+    https://scikit-learn.org/stable/modules/decomposition.html#nmf
+    """
+    with np.errstate(divide='ignore',invalid='ignore'):
+        term1 = y*np.log(y/mu)
+    term1 = term1[np.isfinite(term1)].sum()
+    return term1 + np.sum(mu - y)
+
+def postprocess(U,V):
+    d = V.sum(axis=0)
+    V /= d
+    U *= d
+    o = np.argsort(-U.sum(axis=0))
+    return U[:,o], V[:,o]
+
+# %% Simulate some data
+N = 100
+J = 50
+L = 5
+U = np.maximum(rng.normal(loc=0.0,size=(N,L)), 0.0)
+V = np.maximum(rng.normal(loc=0.0,size=(J,L)), 0.0)
+Y = rng.poisson(U @ V.T)
+#dev_original = poisson_deviance(Y,U@V.T)
+keep_c = Y.sum(axis=0)>0
+keep_r = Y.sum(axis=1)>0
+Y = Y[keep_r,:]
+Y = Y[:,keep_c]
+U,V = postprocess(U[keep_r,:],V[keep_c,:])
+N,J = Y.shape
+l_true = poisson_loss(Y, U@V.T)
+#print("Original deviance: {:.3E}, True deviance: {:.3E}".format(dev_original, dev_true))
+
+# %% SKlearn NMF
+model = NMF(n_components=L, solver='mu', beta_loss='kullback-leibler', regularization=None, init='nndsvda')
+U_sk = model.fit_transform(Y)
+V_sk = model.components_.T
+l_sk = poisson_loss(Y, U_sk@V_sk.T)
+print("True loss: {:.3E}, SKlearn loss: {:.3E}".format(l_true, l_sk))
+
+# %% Tensorflow 
+%%time
+BATCH_SIZE = 19
+ADAM_LEARN_RATE = 0.01
+NUM_EPOCHS = 1000
+D = tf.data.Dataset.from_tensor_slices((np.array(range(N)),Y)).batch(BATCH_SIZE)
+optimizer = tf.optimizers.Adam(ADAM_LEARN_RATE)
+def make_nonzero(x):
+  return tf.clip_by_value(x,0.0,np.inf)
+
+def make_nz_var(size):
+  return tf.Variable(rng.exponential(size=size), constraint=make_nonzero)
+
+class MyNMF(tf.Module):
+  def __init__(self, data_dim, features_dim, latent_dim, **kwargs):
+    super().__init__(**kwargs)
+    #self.U = tuple(make_nz_var(latent_dim) for i in range(data_dim))
+    self.U = tf.Variable(rng.exponential(size=(data_dim,latent_dim)))
+    #U cannot be initialized with constraint due to this bug:
+    #https://github.com/tensorflow/tensorflow/issues/33755
+    #we enforce the constraint manually in the training loop see below
+    self.V = make_nz_var((features_dim,latent_dim))
+  def __call__(self,idx):
+    #U_ss = tf.stack(self.U[idx])
+    #stacking didn't work!
+    U_ss = tf.gather(self.U,idx)
+    return tf.linalg.matmul(U_ss,self.V,transpose_b=True)
+
+model = MyNMF(N,J,L)
+msg = 'Epoch: {:03d}, loss: {:.3E}'
+loss_history = []
+for epoch in range(NUM_EPOCHS):
+    epoch_loss_avg = tf.keras.metrics.Mean()
+    for idx, Yss in D: #iterate through each of the batches
+        with tf.GradientTape() as tape:
+            current_loss = tf.keras.losses.poisson(Yss, model(idx))
+        #how to compute gradient for only the slice of U instead of all?
+        grads = tape.gradient(current_loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        model.U.assign(make_nonzero(model.U))
+        epoch_loss_avg.update_state(current_loss)
+    loss_history.append(epoch_loss_avg.result())
+    if epoch%100==0:
+        print(msg.format(epoch,loss_history[epoch]))
+# postprocessing        
+U_tf,V_tf = postprocess(model.U.numpy(), model.V.numpy())
+l_tf = poisson_loss(Y,U_tf@V_tf.T)
+print("SKlearn loss: {:.3E}, TF loss: {:.3E}".format(l_sk, l_tf))
+
+# %% Tensorflow manual: loss trace plot
+plt.plot()
+fig, ax = plt.subplots()
+ax.set_yscale('log')
+ax.axhline(l_sk,c='red')
+ax.plot(loss_history)
+plt.xlabel('iteration')
+plt.ylabel('Poisson loss');
+plt.show()
+
+# %% Compare results
+def txflat(x):
+    return (x@x.T).flatten()
+plt.scatter(txflat(V), txflat(V_tf))
+plt.axline((0,0),slope=1,c='red')
