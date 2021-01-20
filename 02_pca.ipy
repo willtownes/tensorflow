@@ -31,7 +31,7 @@ def mse(Y,U,V):
 
 # %% Generate data
 N = 100 #number of observations
-J = 200 #number of features
+J = 50 #number of features
 L = 5 #number of latent dimensions
 U = rng.normal(size=(N,L))
 V = rng.normal(size=(J,L))
@@ -44,10 +44,11 @@ V_svd = svd_Y[2][:L,:].T
 mse_svd = mse(Y,U_svd,V_svd)
 
 # %% Global variables and convenience functions
-BATCH_SIZE = 19
+BATCH_SIZE = 29
 ADAM_LEARN_RATE = 0.01
 NUM_EPOCHS = 500
-D = tf.data.Dataset.from_tensor_slices((np.array(range(N)),Y)).batch(BATCH_SIZE)
+x = np.array(range(N))
+D = tf.data.Dataset.from_tensor_slices((x,Y)).batch(BATCH_SIZE)
 optimizer = tf.optimizers.Adam(ADAM_LEARN_RATE)
 
 def postprocess(U,V):
@@ -55,6 +56,25 @@ def postprocess(U,V):
     V = svd_V[0]
     U = U @ svd_V[2].T * svd_V[1]
     return U,V
+
+
+# %% Tensorflow keras
+%%time
+model = tf.keras.Sequential([
+    tf.keras.layers.Embedding(N, L, embeddings_initializer='normal'),
+    tf.keras.layers.Dense(units=J,use_bias=True,kernel_initializer='normal')
+    ])
+model.compile(optimizer, loss='mean_squared_error')
+history1 = model.fit(x,Y, epochs=NUM_EPOCHS, verbose=1, batch_size=BATCH_SIZE)
+U_k = model.layers[0].embeddings.numpy().squeeze()
+V_k = model.layers[1].kernel.numpy().squeeze().T
+mse_k = mse(Y,U_k,V_k)
+plt.plot()
+fig, ax = plt.subplots()
+#ax.set_yscale('log')
+ax.plot(history1.history['loss'])
+ax.axhline(mse_svd,c='red',dashes=[5])
+plt.show()
 
 
 # %% Tensorflow manual
